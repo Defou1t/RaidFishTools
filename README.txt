@@ -1,4 +1,4 @@
-Raid & Fish Tools 1.2.1 - Ako/Defou1t (from Norrina-Hub by Norrina;
+Raid & Fish Tools 1.3.0 - Ako/Defou1t (from Norrina-Hub by Norrina;
 Fish Tracker based on Fish Track Reborn v2.2 by Wagasez, inspired by Usb)
 
 КНОПКА "Raid Tool" - окно рекрутинга (Shift + перетаскивание двигает кнопку).
@@ -10,7 +10,11 @@ Tuna, Sailfish, Sturgeon, Sunfish, Carp, Eel, Arowana, ...) - над ней по
 Баффы видны только у рыбы в цели: игра не отдаёт аддонам баффы рыбы с номером
 (sign) и наблюдаемой цели (проверено в игре). Вторую рыбу - взять в цель.
 
+ПЕРЕДАЧА ЛИДЕРА - кодовое слово по умолчанию у всех gmlr (можно поменять в окне).
+Игрок из списка lead пишет gmlr в чат рейда/группы и получает лидера.
+
 ВАЙТЛИСТ - файл whitelist.txt в этой папке (RaidFishTools\whitelist.txt).
+Создаётся сам при первом запуске; образец - whitelist.example.txt.
 Формат (кавычки и запятые обязательны):
 
 {

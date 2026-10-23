@@ -1,0 +1,11 @@
+{
+    lead = {
+        "Nickname1",
+        "Nickname2",
+    },
+    invite = {
+        "Nickname3",
+        "Nickname4",
+        "Nickname5",
+    },
+}

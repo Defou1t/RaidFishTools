@@ -10,7 +10,7 @@ local addon = {
     name = "Raid & Fish Tools",
     author = "Ako/Defou1t (from Norrina-Hub by Norrina)",
     desc = "Raid auto-invite, roles, give lead; fish buff tracker.",
-    version = "1.2.1"
+    version = "1.3.0"
 }
 
 -- Kept at the Addon root, so replacing this folder never loses settings.
@@ -19,6 +19,8 @@ local NORRINA_DATA_FILE = "norrina_craft_tracker_data.lua"
 -- The first one found is used. The one in this addon's folder is the main
 -- place; the two at the Addon root are read for older setups.
 local WHITELIST_FILES = {"RaidFishTools/whitelist.txt", "raid_whitelist.lua", "norrina_whitelist.lua"}
+-- The group's standard code word for passing raid lead.
+local DEFAULT_LEAD_CODE = "gmlr"
 
 local state = {
     autoInviteEnabled = false,
@@ -27,7 +29,7 @@ local state = {
     raidBlacklist = "",
     raidWhitelistOnly = false,
     raidRoles = {},
-    giveLeadCode = "give lead",
+    giveLeadCode = DEFAULT_LEAD_CODE,
     giveLeadWhitelist = "",
     giveLeadProtection = true,
     buttonX = 40,
@@ -53,7 +55,7 @@ end
 local SETTING_KEYS = {
     "autoInviteEnabled", "autoInviteTriggers", "raidWhitelist", "raidBlacklist",
     "raidWhitelistOnly", "raidRoles", "giveLeadCode", "giveLeadWhitelist",
-    "giveLeadProtection", "autoInviteX", "autoInviteY",
+    "giveLeadProtection", "autoInviteX", "autoInviteY", "leadCodeStandard",
 }
 
 local function save()
@@ -85,7 +87,13 @@ local function load()
     for _, key in ipairs({"autoInviteTriggers", "raidWhitelist", "raidBlacklist", "giveLeadWhitelist"}) do
         if type(state[key]) ~= "string" then state[key] = "" end
     end
-    if type(state.giveLeadCode) ~= "string" or state.giveLeadCode == "" then state.giveLeadCode = "give lead" end
+    if type(state.giveLeadCode) ~= "string" or state.giveLeadCode == "" then state.giveLeadCode = DEFAULT_LEAD_CODE end
+    -- 1.3.0: everyone in the group switches to the standard code word once;
+    -- it can still be changed in the window afterwards.
+    if not state.leadCodeStandard then
+        state.giveLeadCode = DEFAULT_LEAD_CODE
+        state.leadCodeStandard = true
+    end
     for _, key in ipairs({"autoInviteEnabled", "raidWhitelistOnly"}) do
         if type(state[key]) ~= "boolean" then state[key] = false end
     end
@@ -260,6 +268,11 @@ local function loadWhitelistFile()
             end
         end
     end
+    if not data then
+        -- No list anywhere yet: create an empty one in the addon folder, in
+        -- the format the game reads, ready to be filled in.
+        pcall(api.File.Write, api.File, WHITELIST_FILES[1], {lead = {}, invite = {}})
+    end
     if type(data) == "string" then
         for line in data:gmatch("[^\r\n]+") do
             local leadNames = line:match("^%s*[Ll][Ee][Aa][Dd]%s*[:=]%s*(.*)$")
@@ -383,7 +396,7 @@ rebuildAutoInvite = function()
     w._edit:SetText(tostring(state.autoInviteTriggers or ""))
     w._whitelist:SetText(tostring(state.raidWhitelist or ""))
     w._blacklist:SetText(tostring(state.raidBlacklist or ""))
-    w._leadCode:SetText(tostring(state.giveLeadCode or "give lead"))
+    w._leadCode:SetText(tostring(state.giveLeadCode or DEFAULT_LEAD_CODE))
     w._leadWhitelist:SetText(tostring(state.giveLeadWhitelist or ""))
     w._status:SetText(state.autoInviteEnabled and "RECRUITING: ON" or "RECRUITING: OFF")
     if w._status.style then
@@ -426,7 +439,7 @@ end
 
 local function onChatMessage(channel, unit, isHostile, name, message)
     name = tostring(name or "")
-    local code = normaliseChatText(state.giveLeadCode or "give lead")
+    local code = normaliseChatText(state.giveLeadCode or DEFAULT_LEAD_CODE)
     -- Protection controls who may request lead; it must not disable the
     -- handoff itself. With protection OFF, any raid member using the code word
     -- may receive lead.
