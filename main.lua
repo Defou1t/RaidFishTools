@@ -1,16 +1,15 @@
 local api = require("api")
 
--- Raid Tool and Fish Tracker split out of Norrina-Hub 1.1.56.8 by Norrina
--- (Fish Tracker there is based on Fish Track Reborn v2.2 by Wagasez,
--- inspired by Usb), with local changes by Ako/Defou1t:
---   * whitelist file Addon/raid_whitelist.lua for auto-invite
---   * Fish Tracker always on
---   * "Fish probe": tests reading buffs of a fish that is not the target
+-- Raid Tool split out of Norrina-Hub 1.1.56.8 by Norrina, with local
+-- changes by Ako/Defou1t: the whitelist lives in RaidFishTools/whitelist.txt
+-- and is edited both in Notepad and in the window. The Fish Tracker moved to
+-- Auction Income 1.10.0 (its Fish: On/Off button); the folder keeps its name
+-- so updates and settings carry over.
 local addon = {
-    name = "Raid & Fish Tools",
+    name = "Raid Tools",
     author = "Ako/Defou1t (from Norrina-Hub by Norrina)",
-    desc = "Raid auto-invite, roles, give lead; fish buff tracker.",
-    version = "1.3.2"
+    desc = "Raid auto-invite, roles, give lead.",
+    version = "1.4.0"
 }
 
 -- Kept at the Addon root, so replacing this folder never loses settings.
@@ -21,6 +20,8 @@ local NORRINA_DATA_FILE = "norrina_craft_tracker_data.lua"
 local WHITELIST_FILES = {"RaidFishTools/whitelist.txt", "raid_whitelist.lua", "norrina_whitelist.lua"}
 -- The group's standard code word for passing raid lead.
 local DEFAULT_LEAD_CODE = "gmlr"
+-- Characters an edit box takes (~400 names of 10 letters).
+local EDIT_MAX_CHARS = 5000
 
 local state = {
     autoInviteEnabled = false,
@@ -41,7 +42,7 @@ local autoInviteWin, floatingBtn
 local autoInviteLastByName = {}
 
 local function log(message)
-    pcall(function() api.Log:Info("[Raid & Fish] " .. tostring(message)) end)
+    pcall(function() api.Log:Info("[Raid Tools] " .. tostring(message)) end)
 end
 
 local function nowSeconds()
@@ -55,7 +56,7 @@ end
 local SETTING_KEYS = {
     "autoInviteEnabled", "autoInviteTriggers", "raidWhitelist", "raidBlacklist",
     "raidWhitelistOnly", "raidRoles", "giveLeadCode", "giveLeadWhitelist",
-    "giveLeadProtection", "autoInviteX", "autoInviteY", "leadCodeStandard",
+    "giveLeadProtection", "autoInviteX", "autoInviteY", "leadCodeStandard", "whitelistInFile",
 }
 
 local function save()
@@ -141,6 +142,8 @@ local function makeEdit(parent, id, x, y, width, height)
     edit:SetExtent(width, height)
     edit:RemoveAllAnchors()
     edit:AddAnchor("TOPLEFT", parent, x, y)
+    -- The client's default is short; name lists need room.
+    pcall(function() edit:SetMaxTextLength(EDIT_MAX_CHARS) end)
     edit:Show(true)
     return edit
 end
@@ -220,19 +223,35 @@ local function nameInRaidList(name, list)
     return false
 end
 
--- Whitelist file: the whitelist edit boxes hold only so many characters, so
--- longer lists live in RaidFishTools/whitelist.txt. It is a Lua table (the
--- format api.File:Read is known to read; other addons' .txt files are too):
+-- Whitelist file RaidFishTools/whitelist.txt, a Lua table (the format
+-- api.File:Read reads; Notepad edits it while the game runs):
 --   { lead = { "Name1" }, invite = { "Name2", "Name3" }, Guild = { ... } }
 -- Names under "lead" may receive raid lead with the code word; every name in
--- the file (lead included) is whitelisted for auto-invite. Plain text is
--- accepted as well in case the client returns it as a string:
+-- the file (lead included) is whitelisted for auto-invite. The window shows
+-- the file: the Whitelist box holds every name outside "lead", the Give lead
+-- box the "lead" names, and Save writes both back. Plain text is accepted too:
 --   lead: Name1, Name2
 --   Name3, Name4
-local whitelistFile = {names = {}, lead = {}, count = 0, leadCount = 0, lists = 0, path = nil}
+local whitelistFile = {names = {}, lead = {}, count = 0, leadCount = 0, lists = 0, path = nil,
+    inviteNames = {}, leadNames = {}, groupOf = {}}
+
+-- Appends the names in text (as written) to into, skipping those in seen.
+local function splitNames(text, into, seen)
+    for entry in tostring(text or ""):gmatch("[^,;\r\n]+") do
+        -- A raw read can keep quotes or a trailing escape around names.
+        local name = (entry:gsub("[\"'\\]", "")):gsub("^%s+", ""):gsub("%s+$", "")
+        local key = normaliseChatText(name)
+        if key ~= "" and key:sub(1, 1) ~= "#" and key:sub(1, 2) ~= "--" and not seen[key] then
+            seen[key] = true
+            into[#into + 1] = name
+        end
+    end
+    return into
+end
+
+local GROUP_RANK = {lead = 1, invite = 2}
 
 local function loadWhitelistFile()
-    local names, lead, count, leadCount, lists = {}, {}, 0, 0, 0
     local data, path
     for _, candidate in ipairs(WHITELIST_FILES) do
         local ok, read = pcall(api.File.Read, api.File, candidate)
@@ -242,46 +261,91 @@ local function loadWhitelistFile()
             break
         end
     end
-    local function add(value, isLead)
-        for entry in tostring(value):gmatch("[^,;\r\n]+") do
-            -- A raw read can keep quotes or a trailing escape around names.
-            local key = normaliseChatText((entry:gsub("[\"'\\]", "")))
-            if key ~= "" and key:sub(1, 1) ~= "#" and key:sub(1, 2) ~= "--" then
-                if not names[key] then
-                    names[key] = true
-                    count = count + 1
-                end
-                if isLead and not lead[key] then
-                    lead[key] = true
-                    leadCount = leadCount + 1
-                end
-            end
-        end
-    end
-    local function walk(value, depth, isLead)
-        if type(value) == "string" then
-            add(value, isLead)
-        elseif type(value) == "table" and depth < 4 then
-            for key, nested in pairs(value) do
-                if type(nested) == "table" and depth == 0 then lists = lists + 1 end
-                walk(nested, depth + 1, isLead or (depth == 0 and tostring(key):lower() == "lead"))
-            end
-        end
-    end
     if not data then
         -- No list anywhere yet: create an empty one in the addon folder, in
         -- the format the game reads, ready to be filled in.
         pcall(api.File.Write, api.File, WHITELIST_FILES[1], {lead = {}, invite = {}})
     end
+    -- Group name -> its names as text; "lead" first, then "invite", then the rest.
+    local groups, order = {}, {}
+    local function addGroup(group, value)
+        if not groups[group] then groups[group] = {}; order[#order + 1] = group end
+        local list = groups[group]
+        local function walk(nested, depth)
+            if type(nested) == "string" then
+                list[#list + 1] = nested
+            elseif type(nested) == "table" and depth < 3 then
+                for _, inner in ipairs(nested) do walk(inner, depth + 1) end
+                for key, inner in pairs(nested) do
+                    if type(key) ~= "number" then walk(inner, depth + 1) end
+                end
+            end
+        end
+        walk(value, 0)
+    end
     if type(data) == "string" then
         for line in data:gmatch("[^\r\n]+") do
             local leadNames = line:match("^%s*[Ll][Ee][Aa][Dd]%s*[:=]%s*(.*)$")
-            if leadNames then add(leadNames, true) else add(line, false) end
+            if leadNames then addGroup("lead", leadNames) else addGroup("invite", line) end
         end
-    elseif data then
-        walk(data, 0, false)
+    elseif type(data) == "table" then
+        local keys = {}
+        for key in pairs(data) do if type(key) ~= "number" then keys[#keys + 1] = tostring(key) end end
+        table.sort(keys, function(x, y)
+            local rx, ry = GROUP_RANK[x:lower()] or 3, GROUP_RANK[y:lower()] or 3
+            if rx ~= ry then return rx < ry end
+            return x < y
+        end)
+        for _, key in ipairs(keys) do addGroup(key:lower() == "lead" and "lead" or key, data[key]) end
+        -- Names right in the table, outside any group, count as invite.
+        for _, value in ipairs(data) do addGroup("invite", value) end
     end
-    whitelistFile = {names = names, lead = lead, count = count, leadCount = leadCount, lists = lists, path = path}
+    local names, lead, groupOf = {}, {}, {}
+    local count, leadCount = 0, 0
+    local leadNames, inviteNames, inviteSeen = {}, {}, {}
+    for _, group in ipairs(order) do
+        local isLead = group == "lead"
+        for _, name in ipairs(splitNames(table.concat(groups[group], ","), {}, {})) do
+            local key = normaliseChatText(name)
+            if not names[key] then names[key] = true; count = count + 1 end
+            if isLead then
+                if not lead[key] then lead[key] = true; leadCount = leadCount + 1; leadNames[#leadNames + 1] = name end
+            elseif not inviteSeen[key] then
+                inviteSeen[key] = true
+                inviteNames[#inviteNames + 1] = name
+                groupOf[key] = group
+            end
+        end
+    end
+    whitelistFile = {names = names, lead = lead, count = count, leadCount = leadCount, lists = #order, path = path,
+        inviteNames = inviteNames, leadNames = leadNames, groupOf = groupOf}
+end
+
+-- Writes the two name lists to RaidFishTools/whitelist.txt; names keep the
+-- group they had in the file, new ones go to "invite".
+local function writeWhitelistFile(inviteText, leadText)
+    local file = {lead = splitNames(leadText, {}, {}), invite = {}}
+    for _, name in ipairs(splitNames(inviteText, {}, {})) do
+        local group = whitelistFile.groupOf[normaliseChatText(name)] or "invite"
+        file[group] = file[group] or {}
+        table.insert(file[group], name)
+    end
+    local ok, err = pcall(api.File.Write, api.File, WHITELIST_FILES[1], file)
+    if not ok then log("Whitelist file not written: " .. tostring(err)) end
+    loadWhitelistFile()
+end
+
+-- 1.4.0: names typed in the window up to 1.3.x lived in the settings; they
+-- move into the file once, so the file holds the whole list.
+local function moveWindowListsToFile()
+    if state.whitelistInFile then return end
+    state.whitelistInFile = true
+    if state.raidWhitelist ~= "" or state.giveLeadWhitelist ~= "" then
+        writeWhitelistFile(table.concat(whitelistFile.inviteNames, ",") .. "," .. state.raidWhitelist,
+            table.concat(whitelistFile.leadNames, ",") .. "," .. state.giveLeadWhitelist)
+        log("Whitelist names from the window moved into Addon/" .. WHITELIST_FILES[1] .. ".")
+    end
+    state.raidWhitelist, state.giveLeadWhitelist = "", ""
 end
 
 local function inWhitelistFile(name)
@@ -328,10 +392,17 @@ end
 
 local function readEdits()
     state.autoInviteTriggers = tostring(autoInviteWin._edit:GetText() or "")
-    state.raidWhitelist = tostring(autoInviteWin._whitelist:GetText() or "")
     state.raidBlacklist = tostring(autoInviteWin._blacklist:GetText() or "")
     state.giveLeadCode = tostring(autoInviteWin._leadCode:GetText() or "")
-    state.giveLeadWhitelist = tostring(autoInviteWin._leadWhitelist:GetText() or "")
+    -- The two name lists are the file's. A list the box could not hold
+    -- whole is left as it is in the file, so a cut list never drops names.
+    local fileInvite = table.concat(whitelistFile.inviteNames, ", ")
+    local fileLead = table.concat(whitelistFile.leadNames, ", ")
+    local invite = autoInviteWin._inviteFits and tostring(autoInviteWin._whitelist:GetText() or "") or fileInvite
+    local lead = autoInviteWin._leadFits and tostring(autoInviteWin._leadWhitelist:GetText() or "") or fileLead
+    if invite ~= fileInvite or lead ~= fileLead then
+        writeWhitelistFile(invite, lead)
+    end
 end
 
 local function ensureAutoInviteWindow()
@@ -345,7 +416,7 @@ local function ensureAutoInviteWindow()
     makeLabel(w, "rf_prompt", "Recruit phrases (comma-separated):", 18, 106, 300, 24, ALIGN.LEFT)
     w._edit = makeEdit(w, "rf_phrases", 18, 132, 484, 30)
     makeLabel(w, "rf_note", "Example: x serp, x cr, x gr  |  Raid leader required", 18, 169, 484, 24, ALIGN.CENTER)
-    makeLabel(w, "rf_white_label", "Whitelist (comma-separated player names):", 18, 202, 330, 24, ALIGN.LEFT)
+    makeLabel(w, "rf_white_label", "Whitelist (names, comma-separated) = whitelist.txt:", 18, 202, 484, 24, ALIGN.LEFT)
     w._whitelist = makeEdit(w, "rf_whitelist", 18, 228, 484, 30)
     makeLabel(w, "rf_black_label", "Blacklist (never invite these names):", 18, 268, 330, 24, ALIGN.LEFT)
     w._blacklist = makeEdit(w, "rf_blacklist", 18, 294, 484, 30)
@@ -372,13 +443,12 @@ local function ensureAutoInviteWindow()
     end)
     makeLabel(w, "rf_lead_code_label", "Give lead code word:", 18, 446, 180, 24, ALIGN.LEFT)
     w._leadCode = makeEdit(w, "rf_lead_code", 205, 442, 280, 30)
-    makeLabel(w, "rf_lead_white_label", "Give lead whitelist (+ \"lead\" list in the file):", 18, 484, 484, 24, ALIGN.LEFT)
+    makeLabel(w, "rf_lead_white_label", "Give lead whitelist = \"lead\" in whitelist.txt:", 18, 484, 484, 24, ALIGN.LEFT)
     w._leadWhitelist = makeEdit(w, "rf_lead_whitelist", 18, 510, 484, 30)
     w._leadToggle = makeButton(w, "rf_lead_protection", "", 18, 556, 210, 28, function()
         state.giveLeadProtection = not state.giveLeadProtection; save(); resetAutoInviteWindow()
     end)
-    -- Fish Tracker has no settings: it shows itself above any fish you target.
-    makeLabel(w, "rf_fish_note", "Fish Tracker: always on - target a fish", 18, 606, 290, 24, ALIGN.LEFT)
+    makeLabel(w, "rf_save_note", "Save also writes whitelist.txt", 18, 606, 290, 24, ALIGN.LEFT)
     makeButton(w, "rf_save", "Save", 315, 602, 85, 28, function()
         readEdits(); save(); resetAutoInviteWindow()
     end)
@@ -394,10 +464,15 @@ rebuildAutoInvite = function()
     ensureAutoInviteWindow()
     local w = autoInviteWin
     w._edit:SetText(tostring(state.autoInviteTriggers or ""))
-    w._whitelist:SetText(tostring(state.raidWhitelist or ""))
+    local invite = table.concat(whitelistFile.inviteNames, ", ")
+    w._whitelist:SetText(invite)
+    w._inviteFits = w._whitelist:GetText() == invite
+    if not w._inviteFits then log("Whitelist too long for the box: edit Addon/" .. WHITELIST_FILES[1] .. " in Notepad.") end
     w._blacklist:SetText(tostring(state.raidBlacklist or ""))
     w._leadCode:SetText(tostring(state.giveLeadCode or DEFAULT_LEAD_CODE))
-    w._leadWhitelist:SetText(tostring(state.giveLeadWhitelist or ""))
+    local lead = table.concat(whitelistFile.leadNames, ", ")
+    w._leadWhitelist:SetText(lead)
+    w._leadFits = w._leadWhitelist:GetText() == lead
     w._status:SetText(state.autoInviteEnabled and "RECRUITING: ON" or "RECRUITING: OFF")
     if w._status.style then
         if state.autoInviteEnabled then w._status.style:SetColor(0.04, 0.42, 0.08, 1)
@@ -431,6 +506,8 @@ local function toggleAutoInvite()
     if autoInviteWin and autoInviteWin:IsVisible() then
         closeAutoInviteWindow()
     else
+        -- Names added in Notepad meanwhile show up at once.
+        loadWhitelistFile()
         ensureAutoInviteWindow()
         rebuildAutoInvite()
         autoInviteWin:Show(true)
@@ -471,395 +548,6 @@ local function onChatMessage(channel, unit, isHostile, name, message)
         log("Raid Tool: invited " .. name .. " for '" .. tostring(message) .. "'.")
     else
         log("Raid Tool invite failed for " .. name .. ": " .. tostring(inviteErr))
-    end
-end
-
--- ============================================================
--- FISH TRACKER (from Norrina-Hub; based on Fish Track Reborn v2.2 by
--- Wagasez, inspired by Usb). Always on.
--- ============================================================
-
-local fishBuffIds = {
-    [5715] = true, [5264] = true, [5265] = true, [5266] = true,
-    [5267] = true, [5508] = true
-}
-local fishActionBuffs = {[5264] = true, [5265] = true, [5266] = true, [5267] = true, [5508] = true}
-local fishNames = {
-    ["Marlin"] = true, ["Blue Marlin"] = true, ["Tuna"] = true, ["Blue Tuna"] = true,
-    ["Bluefin Tuna"] = true, ["Sunfish"] = true, ["Sailfish"] = true, ["Sturgeon"] = true,
-    ["Pink Pufferfish"] = true, ["Carp"] = true, ["Arowana"] = true, ["Pufferfish"] = true,
-    ["Eel"] = true, ["Pink Marlin"] = true, ["Treasure Mimic"] = true,
-    ["철갑상어"] = true, ["청새치"] = true, ["참다랑어"] = true, ["돛새치"] = true, ["개복치"] = true,
-    ["鲟鱼"] = true, ["枪鱼"] = true, ["蓝鳍金枪鱼"] = true, ["旗鱼"] = true, ["翻车鱼"] = true
-}
-local fish = {
-    targetWin = nil, targetIcon = nil, actionTime = nil, strengthIcon = nil, strengthTime = nil,
-    markerData = {}, markerUI = {}, boatData = nil, boatUI = nil, lastPosition = "",
-}
-local FISH_DEAD_TIME_MS, FISH_OWNERS_MARK_ID = 150000, 4867
-
-local function fishHideAll()
-    if fish.targetWin then fish.targetWin:Show(false) end
-    if fish.watch then fish.watch.win:Show(false) end
-    for _, ui in pairs(fish.markerUI) do if ui.window then ui.window:Show(false) end end
-    if fish.boatUI and fish.boatUI.window then fish.boatUI.window:Show(false) end
-end
-
--- Widgets are only touched when something changed. Up to 1.3.0 the icon
--- texture, texts and anchors were set again on every frame while a fish was
--- targeted; the client's renderer runs in its own thread, and from 2026-10-22
--- the game crashed there (CryRenderD3D10.dll, null read) several times a day.
--- Last visibility, text and texture per widget (separate: an icon is also shown/hidden).
-local shown, texts, textures = {}, {}, {}
-
-local function fishShow(widget, visible)
-    if shown[widget] == visible then return end
-    shown[widget] = visible
-    widget:Show(visible)
-end
-
-local function fishText(label, text)
-    if texts[label] == text then return end
-    texts[label] = text
-    label:SetText(text)
-end
-
-local buffIcons = {}   -- buff id -> icon path
-
-local function fishSetIcon(icon, buffId, path)
-    if not icon then return end
-    local iconPath = path or buffIcons[buffId]
-    if not iconPath then
-        local ok, tooltip = pcall(api.Ability.GetBuffTooltip, api.Ability, buffId, 1)
-        iconPath = ok and tooltip and tooltip.path or nil
-        buffIcons[buffId] = iconPath
-    end
-    if not iconPath or textures[icon] == iconPath then return end
-    textures[icon] = iconPath
-    pcall(F_SLOT.SetIconBackGround, icon, iconPath)
-end
-
-local function fishCreateIcon(parent, id)
-    local icon = CreateItemIconButton(id, parent)
-    icon:Show(true)
-    F_SLOT.ApplySlotSkin(icon, icon.back, SLOT_STYLE.DEFAULT)
-    return icon
-end
-
-local function fishLabel(parent, id, text, x, y, r, g, b)
-    local label = makeLabel(parent, id, text, x, y, 38, 20, ALIGN.CENTER)
-    if label.style and r then label.style:SetColor(r, g, b, 1) end
-    return label
-end
-
--- One overlay (action + Strength Contest icons with timers) drawn above a
--- unit given by its token. "target" is the original; the second one follows
--- the client's watch / track target.
-local function createFishOverlay(ids, tag)
-    local s = idSuffix
-    local o = {lastPosition = ""}
-    o.win = api.Interface:CreateEmptyWindow(ids.win .. s)
-    o.win:Show(false)
-    o.icon = fishCreateIcon(o.win, ids.icon .. s)
-    o.icon:AddAnchor("TOPLEFT", o.win, "TOPLEFT", 0, 0)
-    o.actionTime = fishLabel(o.win, ids.icon .. "_time" .. s, "", 0, 38, 0, 1, 0)
-    o.strengthIcon = fishCreateIcon(o.win, ids.strength .. s)
-    o.strengthIcon:AddAnchor("LEFT", o.icon, "RIGHT", 5, 0)
-    o.strengthIcon:Show(false)
-    o.strengthTime = fishLabel(o.win, ids.strength .. "_time" .. s, "", 43, 38, 1, 1, 0)
-    if tag then fishLabel(o.win, ids.win .. "_tag" .. s, tag, 21, -22, 0.4, 0.8, 1) end
-    return o
-end
-
-local function initFishTracker()
-    if fish.targetWin then return end
-    local s = idSuffix
-    fish.main = createFishOverlay({win = "raidfish_fish_target", icon = "raidfish_fish_action",
-        strength = "raidfish_fish_strength"})
-    fish.watch = createFishOverlay({win = "raidfish_fish_watch", icon = "raidfish_fish_watch_action",
-        strength = "raidfish_fish_watch_strength"}, "W")
-    fish.targetWin = fish.main.win
-
-    for marker = 1, 9 do
-        local window = api.Interface:CreateEmptyWindow("raidfish_fish_marker_" .. marker .. s)
-        window:Show(false)
-        local icon = fishCreateIcon(window, "raidfish_fish_marker_icon_" .. marker .. s)
-        icon:AddAnchor("TOPLEFT", window, "TOPLEFT", 0, 0)
-        local top = fishLabel(window, "raidfish_fish_marker_num_" .. marker .. s, tostring(marker), 0, -22)
-        local time = fishLabel(window, "raidfish_fish_marker_time_" .. marker .. s, "", 0, 38, 1, 0.5, 0)
-        fish.markerUI[marker] = {window = window, icon = icon, top = top, time = time}
-    end
-    local boat = api.Interface:CreateEmptyWindow("raidfish_fish_boat" .. s)
-    boat:Show(false)
-    local boatIcon = fishCreateIcon(boat, "raidfish_fish_boat_icon" .. s)
-    boatIcon:AddAnchor("TOPLEFT", boat, "TOPLEFT", 0, 0)
-    local boatTime = fishLabel(boat, "raidfish_fish_boat_time" .. s, "", 0, 38, 0.3, 0.6, 1)
-    fish.boatUI = {window = boat, icon = boatIcon, time = boatTime}
-end
-
--- The client's unit frames keep the token of the unit they show in
--- frame.target ("target" for the target frame, as Better ArcheAge reads it),
--- so the watch / track target frame tells which token to read.
-local function watchToken()
-    if fish.watchTokenCache then return fish.watchTokenCache end
-    -- Asking the client for its frame is not free: once every 5 s at most.
-    local nowMs = tonumber(api.Time:GetUiMsec()) or 0
-    if fish.watchAskedMs and nowMs - fish.watchAskedMs < 5000 then return nil end
-    fish.watchAskedMs = nowMs
-    local ok, token = pcall(function()
-        local frame = ADDON:GetContent(UIC.WATCH_TARGET_FRAME)
-        return frame and frame.target
-    end)
-    if ok and type(token) == "string" and token ~= "" and token ~= "target" then
-        fish.watchTokenCache = token
-        return token
-    end
-    return nil
-end
-
--- Keeps overlay o under its fish. Runs every frame so the icons follow the
--- camera smoothly; re-anchored only when the pixel position changed.
-local function placeFishOverlay(o)
-    local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(o.token) end)
-    if not (okPos and x and y) and o.fallbackX then
-        -- No screen position for this token: a fixed spot instead.
-        x, y = o.fallbackX, o.fallbackY
-    end
-    x, y = tonumber(x), tonumber(y)
-    if not (x and y) then return end
-    x, y = math.floor(x - 42), math.floor(y + 5)
-    if x ~= o.lastX or y ~= o.lastY then
-        o.win:RemoveAllAnchors()
-        o.win:AddAnchor("TOP", "UIParent", "TOPLEFT", x, y)
-        o.lastX, o.lastY = x, y
-    end
-end
-
--- Fills overlay o for the unit behind token. Returns what the caller needs
--- (unit id, info, dead, Owner's Mark buff) or nil when it is not a fish.
-local function updateFishOverlay(o, token, fallbackX, fallbackY)
-    local unitId = token and api.Unit:GetUnitId(token)
-    local info = unitId and api.Unit:GetUnitInfoById(unitId) or nil
-    if not info or not fishNames[info.name] then fishShow(o.win, false); return nil end
-    o.token, o.fallbackX, o.fallbackY = token, fallbackX, fallbackY
-    placeFishOverlay(o)
-    local health = api.Unit:UnitHealth(token)
-    if health and health <= 0 then
-        fishShow(o.strengthIcon, false); fishText(o.strengthTime, "")
-        fishSetIcon(o.icon, 4832); fishText(o.actionTime, "")
-        fishShow(o.win, true)
-        return {id = unitId, info = info, dead = true}
-    end
-    local count = api.Unit:UnitBuffCount(token) or 0
-    local action, contest, owner
-    for index = 1, count do
-        local buff = api.Unit:UnitBuff(token, index)
-        if buff then
-            if buff.buff_id == FISH_OWNERS_MARK_ID then owner = buff
-            elseif fishBuffIds[buff.buff_id] then
-                if fishActionBuffs[buff.buff_id] then action = buff else contest = buff end
-            end
-        end
-    end
-    if action then
-        fishSetIcon(o.icon, action.buff_id, action.path)
-        fishText(o.actionTime, string.format("%.1fs", (tonumber(action.timeLeft) or 0) / 1000))
-    else
-        fishSetIcon(o.icon, 3710)
-        fishText(o.actionTime, "Waiting")
-    end
-    if contest then
-        fishSetIcon(o.strengthIcon, 5715)
-        fishText(o.strengthTime, string.format("%.1fs", (tonumber(contest.timeLeft) or 0) / 1000))
-        fishShow(o.strengthIcon, true)
-    else
-        fishShow(o.strengthIcon, false); fishText(o.strengthTime, "")
-    end
-    fishShow(o.win, true)
-    return {id = unitId, info = info, owner = owner}
-end
-
-local function updateFishTracker()
-    if not fish.targetWin then return end
-    local now = tonumber(api.Time:GetUiMsec()) or 0
-    local active = 0
-    for marker = 1, 9 do
-        local id = api.Unit:GetOverHeadMarkerUnitId(marker)
-        local info = id and api.Unit:GetUnitInfoById(id) or nil
-        if info and fishNames[info.name] then
-            fish.markerData[marker] = fish.markerData[marker] or {id = id}
-            if fish.markerData[marker].id ~= id then fish.markerData[marker] = {id = id} end
-        elseif fish.markerData[marker] then
-            fish.markerData[marker] = nil
-            fishShow(fish.markerUI[marker].window, false)
-        end
-        local data, ui = fish.markerData[marker], fish.markerUI[marker]
-        if data and data.deathAt then
-            local remaining = FISH_DEAD_TIME_MS - (now - data.deathAt)
-            if remaining > 0 then
-                if ui.slot ~= active then
-                    ui.window:RemoveAllAnchors()
-                    ui.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
-                    ui.slot = active
-                end
-                fishSetIcon(ui.icon, 4832)
-                fishText(ui.time, string.format("%.0fs", remaining / 1000))
-                fishShow(ui.window, true)
-                active = active + 1
-            else
-                data.deathAt = nil
-                fishShow(ui.window, false)
-            end
-        end
-    end
-    if fish.boatData then
-        local remaining = fish.boatData.expiresAt - now
-        if remaining > 0 then
-            if fish.boatUI.slot ~= active then
-                fish.boatUI.window:RemoveAllAnchors()
-                fish.boatUI.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
-                fish.boatUI.slot = active
-            end
-            fishText(fish.boatUI.time, string.format("%.0fs", remaining / 1000))
-            fishShow(fish.boatUI.window, true)
-        else
-            fish.boatData = nil
-            fishShow(fish.boatUI.window, false)
-        end
-    end
-
-    local main = updateFishOverlay(fish.main, "target")
-    -- The watched fish, unless it is the same fish as the target.
-    local token = watchToken()
-    local watchId = token and api.Unit:GetUnitId(token)
-    if token and watchId and not (main and main.id == watchId) then
-        local screenW = tonumber(api.Interface:GetScreenWidth()) or 1920
-        updateFishOverlay(fish.watch, token, math.floor(screenW / 2) + 100, 150)
-    else
-        fishShow(fish.watch.win, false)
-    end
-
-    if not main then return end
-    if main.dead then
-        for marker = 1, 9 do
-            local data = fish.markerData[marker]
-            if data and data.id == main.id and not data.deathAt then data.deathAt = now end
-        end
-        return
-    end
-    if main.owner then
-        local player = api.Unit:GetUnitInfoById(api.Unit:GetUnitId("player"))
-        if player and main.info.owner_name == player.name then
-            fish.boatData = {expiresAt = now + (tonumber(main.owner.timeLeft) or 0)}
-            fishSetIcon(fish.boatUI.icon, FISH_OWNERS_MARK_ID)
-        end
-    end
-end
--- Experiment: can buffs of a fish that is NOT the target be read? The addon
--- API takes unit tokens (player, target, targettarget, team1-50, playerpet);
--- a fish with an overhead marker gives only a unit id. This tries
--- UnitBuffCount with that id and with the undocumented "watchtarget" token,
--- and reports each distinct result once in chat.
-local probe = {seen = {}, lastMs = 0, lines = {}}
-local PROBE_FILE = "RaidFishTools/probe_log.txt"
-
--- Each new finding goes to chat and to PROBE_FILE (last 200 lines), so it
--- can be read back without a screenshot of the chat.
-local function probeReport(key, text)
-    if probe.seen[key] == text then return end
-    probe.seen[key] = text
-    log("Fish probe: " .. text)
-    local stamp = ""
-    pcall(function()
-        local t = api.Time:TimeToDate(api.Time:GetLocalTime())
-        stamp = string.format("%02d:%02d:%02d ", tonumber(t.hour) or 0, tonumber(t.minute or t.min) or 0, tonumber(t.second or t.sec) or 0)
-    end)
-    table.insert(probe.lines, stamp .. (tostring(text):gsub('[%c"\\]', "'")))
-    while #probe.lines > 200 do table.remove(probe.lines, 1) end
-    pcall(api.File.Write, api.File, PROBE_FILE, {lines = probe.lines})
-end
-
--- Step by step: what the watch frame holds and what the game answers for it.
-local function probeWatchFrame()
-    local okFrame, frame = pcall(function() return ADDON:GetContent(UIC.WATCH_TARGET_FRAME) end)
-    if not okFrame or not frame then
-        probeReport("wf", "watch frame: " .. (okFrame and "nil" or ("error " .. tostring(frame))))
-        return
-    end
-    local fields = {}
-    pcall(function()
-        for key, value in pairs(frame) do
-            local kind = type(value)
-            if kind == "string" or kind == "number" or kind == "boolean" then
-                fields[#fields + 1] = tostring(key) .. "=" .. tostring(value)
-            end
-            if #fields >= 40 then break end
-        end
-    end)
-    local okVis, visible = pcall(function() return frame:IsVisible() end)
-    probeReport("wf", "watch frame visible=" .. tostring(okVis and visible) .. " fields: " .. table.concat(fields, ", "))
-    local okT, token = pcall(function() return frame.target end)
-    if not (okT and type(token) == "string") then return end
-    local function ask(label, fn)
-        local ok, a, b = pcall(fn)
-        return label .. "=" .. (ok and (tostring(a) .. (b ~= nil and ("," .. tostring(b)) or "")) or ("error " .. tostring(a)))
-    end
-    probeReport("wf:" .. token, "token '" .. token .. "': "
-        .. ask("id", function() return api.Unit:GetUnitId(token) end) .. "; "
-        .. ask("name", function() return api.Unit:UnitName(token) end) .. "; "
-        .. ask("hp", function() return api.Unit:UnitHealth(token) end) .. "; "
-        .. ask("buffs", function() return api.Unit:UnitBuffCount(token) end) .. "; "
-        .. ask("screen", function() return api.Unit:GetUnitScreenPosition(token) end) .. "; "
-        .. ask("distance", function() return api.Unit:UnitDistance(token) end))
-end
-
-local function fishProbeOthers()
-    local now = tonumber(api.Time:GetUiMsec()) or 0
-    if now - probe.lastMs < 3000 then return end
-    probe.lastMs = now
-    local targetId = api.Unit:GetUnitId("target")
-    for marker = 1, 9 do
-        local data = fish.markerData[marker]
-        if data and data.id and data.id ~= targetId then
-            local ok, count = pcall(function() return api.Unit:UnitBuffCount(data.id) end)
-            local buffs = ""
-            if ok and tonumber(count) and tonumber(count) > 0 then
-                local okBuff, buff = pcall(function() return api.Unit:UnitBuff(data.id, 1) end)
-                buffs = okBuff and type(buff) == "table" and (" first buff id " .. tostring(buff.buff_id)) or ""
-            end
-            probeReport("marker" .. marker, "marked fish " .. marker .. " (not target): buffs by id -> "
-                .. (ok and tostring(count) or ("error " .. tostring(count))) .. buffs)
-            -- What the game tells about it by id (health? its target?).
-            local okInfo, info = pcall(function() return api.Unit:GetUnitInfoById(data.id) end)
-            if okInfo and type(info) == "table" then
-                local fields = {}
-                for key, value in pairs(info) do
-                    if type(value) ~= "table" and type(value) ~= "function" then
-                        fields[#fields + 1] = tostring(key) .. "=" .. tostring(value)
-                    end
-                    if #fields >= 25 then break end
-                end
-                probeReport("info" .. marker, "marked fish " .. marker .. " info: " .. table.concat(fields, ", "))
-            end
-            local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(data.id) end)
-            probeReport("pos" .. marker, "marked fish " .. marker .. " screen position by id -> "
-                .. (okPos and (tostring(x) .. ", " .. tostring(y)) or ("error " .. tostring(x))))
-        end
-    end
-    -- The client's watch / track target (WATCH_TARGET_FRAME) has no documented
-    -- unit token, so a few likely names are tried; whichever answers is reported.
-    probeReport("watchframe", "watch frame unit token = " .. tostring(watchToken()))
-    probeWatchFrame()
-    for _, token in ipairs({watchToken() or "watchtarget", "watchtarget", "tracktarget", "focus"}) do
-        local okId, watchId = pcall(function() return api.Unit:GetUnitId(token) end)
-        if okId and watchId and watchId ~= targetId then
-            local info = api.Unit:GetUnitInfoById(watchId)
-            local ok, count = pcall(function() return api.Unit:UnitBuffCount(token) end)
-            local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(token) end)
-            probeReport("watch:" .. token, "'" .. token .. "' = " .. tostring(info and info.name)
-                .. ", buffs -> " .. (ok and tostring(count) or ("error " .. tostring(count)))
-                .. ", screen -> " .. (okPos and (tostring(x) .. ", " .. tostring(y)) or "error"))
-        end
     end
 end
 
@@ -907,25 +595,6 @@ local function createFloatingButton()
     floatingBtn:Show(true)
 end
 
-local lastFishUpdateMs = -100000
-
-local function OnUpdate()
-    -- 10 times a second is enough for buffs and timers shown to 0.1 s; the
-    -- position of a shown overlay follows the fish every frame.
-    local nowMs = tonumber(api.Time:GetUiMsec()) or 0
-    if nowMs - lastFishUpdateMs < 100 then
-        if fish.main and shown[fish.main.win] then pcall(placeFishOverlay, fish.main) end
-        if fish.watch and shown[fish.watch.win] then pcall(placeFishOverlay, fish.watch) end
-        return
-    end
-    lastFishUpdateMs = nowMs
-    local ok, err = pcall(updateFishTracker)
-    if not ok then log("Fish Tracker error: " .. tostring(err)) end
-    -- The probe (fishProbeOthers) answered everything it could, so it no
-    -- longer runs: verified 2026-10-23 that the addon API returns nothing for
-    -- a fish by marker id (only name/level) or by the "watchtarget" token.
-end
-
 local function OnLoad()
     -- Windows of a previous load survive an addon reload; new names avoid clashes.
     idSuffix = "_" .. string.format("%.0f", tonumber(api.Time:GetUiMsec()) or 0)
@@ -933,9 +602,9 @@ local function OnLoad()
     if not ok then log("Settings load failed: " .. tostring(err)) end
     ok, err = pcall(loadWhitelistFile)
     if not ok then log("Whitelist file failed: " .. tostring(err)) end
+    ok, err = pcall(moveWindowListsToFile)
+    if not ok then log("Whitelist move failed: " .. tostring(err)) end
     save()
-    ok, err = pcall(initFishTracker)
-    if not ok then log("Fish Tracker failed to start: " .. tostring(err)) end
     api:DoIn(200, function()
         local success, buttonErr = pcall(createFloatingButton)
         if not success then log("Button failed: " .. tostring(buttonErr)) end
@@ -944,15 +613,12 @@ local function OnLoad()
         local success, chatErr = pcall(onChatMessage, ...)
         if not success then log("Raid Tool error: " .. tostring(chatErr)) end
     end)
-    api.On("UPDATE", OnUpdate)
-    log("Loaded. 'Raid Tool' button opens recruiting; Fish Tracker is on. Shift-drag moves the button.")
+    log("Loaded. 'Raid Tool' button opens recruiting; Shift-drag moves the button. Fish Tracker: Auction Income.")
 end
 
 local function OnUnload()
-    api.On("UPDATE", function() end)
     api.On("CHAT_MESSAGE", function() end)
     closeAutoInviteWindow()
-    fishHideAll()
     if floatingBtn then floatingBtn:Show(false) end
     save()
 end
