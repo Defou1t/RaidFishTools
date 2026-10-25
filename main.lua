@@ -10,7 +10,7 @@ local addon = {
     name = "Raid & Fish Tools",
     author = "Ako/Defou1t (from Norrina-Hub by Norrina)",
     desc = "Raid auto-invite, roles, give lead; fish buff tracker.",
-    version = "1.3.0"
+    version = "1.3.1"
 }
 
 -- Kept at the Addon root, so replacing this folder never loses settings.
@@ -505,14 +505,38 @@ local function fishHideAll()
     if fish.boatUI and fish.boatUI.window then fish.boatUI.window:Show(false) end
 end
 
+-- Widgets are only touched when something changed. Up to 1.3.0 the icon
+-- texture, texts and anchors were set again on every frame while a fish was
+-- targeted; the client's renderer runs in its own thread, and from 2026-10-22
+-- the game crashed there (CryRenderD3D10.dll, null read) several times a day.
+-- Last visibility, text and texture per widget (separate: an icon is also shown/hidden).
+local shown, texts, textures = {}, {}, {}
+
+local function fishShow(widget, visible)
+    if shown[widget] == visible then return end
+    shown[widget] = visible
+    widget:Show(visible)
+end
+
+local function fishText(label, text)
+    if texts[label] == text then return end
+    texts[label] = text
+    label:SetText(text)
+end
+
+local buffIcons = {}   -- buff id -> icon path
+
 local function fishSetIcon(icon, buffId, path)
     if not icon then return end
-    local iconPath = path
+    local iconPath = path or buffIcons[buffId]
     if not iconPath then
         local ok, tooltip = pcall(api.Ability.GetBuffTooltip, api.Ability, buffId, 1)
         iconPath = ok and tooltip and tooltip.path or nil
+        buffIcons[buffId] = iconPath
     end
-    if iconPath then pcall(F_SLOT.SetIconBackGround, icon, iconPath) end
+    if not iconPath or textures[icon] == iconPath then return end
+    textures[icon] = iconPath
+    pcall(F_SLOT.SetIconBackGround, icon, iconPath)
 end
 
 local function fishCreateIcon(parent, id)
@@ -578,6 +602,10 @@ end
 -- so the watch / track target frame tells which token to read.
 local function watchToken()
     if fish.watchTokenCache then return fish.watchTokenCache end
+    -- Asking the client for its frame is not free: once every 5 s at most.
+    local nowMs = tonumber(api.Time:GetUiMsec()) or 0
+    if fish.watchAskedMs and nowMs - fish.watchAskedMs < 5000 then return nil end
+    fish.watchAskedMs = nowMs
     local ok, token = pcall(function()
         local frame = ADDON:GetContent(UIC.WATCH_TARGET_FRAME)
         return frame and frame.target
@@ -594,25 +622,26 @@ end
 local function updateFishOverlay(o, token, fallbackX, fallbackY)
     local unitId = token and api.Unit:GetUnitId(token)
     local info = unitId and api.Unit:GetUnitInfoById(unitId) or nil
-    if not info or not fishNames[info.name] then o.win:Show(false); return nil end
+    if not info or not fishNames[info.name] then fishShow(o.win, false); return nil end
     local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(token) end)
     if not (okPos and x and y) and fallbackX then
         -- No screen position for this token: a fixed spot instead.
         x, y = fallbackX, fallbackY
     end
+    x, y = tonumber(x), tonumber(y)
     if x and y then
-        local position = tostring(x) .. "," .. tostring(y)
-        if position ~= o.lastPosition then
+        -- Re-anchored only when it moved by 2 pixels or more.
+        if not o.lastX or math.abs(x - o.lastX) >= 2 or math.abs(y - o.lastY) >= 2 then
             o.win:RemoveAllAnchors()
-            o.win:AddAnchor("TOP", "UIParent", "TOPLEFT", x - 42, y + 5)
-            o.lastPosition = position
+            o.win:AddAnchor("TOP", "UIParent", "TOPLEFT", math.floor(x - 42), math.floor(y + 5))
+            o.lastX, o.lastY = x, y
         end
     end
     local health = api.Unit:UnitHealth(token)
     if health and health <= 0 then
-        o.strengthIcon:Show(false); o.strengthTime:SetText("")
-        fishSetIcon(o.icon, 4832); o.actionTime:SetText("")
-        o.win:Show(true)
+        fishShow(o.strengthIcon, false); fishText(o.strengthTime, "")
+        fishSetIcon(o.icon, 4832); fishText(o.actionTime, "")
+        fishShow(o.win, true)
         return {id = unitId, info = info, dead = true}
     end
     local count = api.Unit:UnitBuffCount(token) or 0
@@ -628,19 +657,19 @@ local function updateFishOverlay(o, token, fallbackX, fallbackY)
     end
     if action then
         fishSetIcon(o.icon, action.buff_id, action.path)
-        o.actionTime:SetText(string.format("%.1fs", (tonumber(action.timeLeft) or 0) / 1000))
+        fishText(o.actionTime, string.format("%.1fs", (tonumber(action.timeLeft) or 0) / 1000))
     else
         fishSetIcon(o.icon, 3710)
-        o.actionTime:SetText("Waiting")
+        fishText(o.actionTime, "Waiting")
     end
     if contest then
         fishSetIcon(o.strengthIcon, 5715)
-        o.strengthTime:SetText(string.format("%.1fs", (tonumber(contest.timeLeft) or 0) / 1000))
-        o.strengthIcon:Show(true)
+        fishText(o.strengthTime, string.format("%.1fs", (tonumber(contest.timeLeft) or 0) / 1000))
+        fishShow(o.strengthIcon, true)
     else
-        o.strengthIcon:Show(false); o.strengthTime:SetText("")
+        fishShow(o.strengthIcon, false); fishText(o.strengthTime, "")
     end
-    o.win:Show(true)
+    fishShow(o.win, true)
     return {id = unitId, info = info, owner = owner}
 end
 
@@ -656,34 +685,40 @@ local function updateFishTracker()
             if fish.markerData[marker].id ~= id then fish.markerData[marker] = {id = id} end
         elseif fish.markerData[marker] then
             fish.markerData[marker] = nil
-            fish.markerUI[marker].window:Show(false)
+            fishShow(fish.markerUI[marker].window, false)
         end
         local data, ui = fish.markerData[marker], fish.markerUI[marker]
         if data and data.deathAt then
             local remaining = FISH_DEAD_TIME_MS - (now - data.deathAt)
             if remaining > 0 then
-                ui.window:RemoveAllAnchors()
-                ui.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
+                if ui.slot ~= active then
+                    ui.window:RemoveAllAnchors()
+                    ui.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
+                    ui.slot = active
+                end
                 fishSetIcon(ui.icon, 4832)
-                ui.time:SetText(string.format("%.0fs", remaining / 1000))
-                ui.window:Show(true)
+                fishText(ui.time, string.format("%.0fs", remaining / 1000))
+                fishShow(ui.window, true)
                 active = active + 1
             else
                 data.deathAt = nil
-                ui.window:Show(false)
+                fishShow(ui.window, false)
             end
         end
     end
     if fish.boatData then
         local remaining = fish.boatData.expiresAt - now
         if remaining > 0 then
-            fish.boatUI.window:RemoveAllAnchors()
-            fish.boatUI.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
-            fish.boatUI.time:SetText(string.format("%.0fs", remaining / 1000))
-            fish.boatUI.window:Show(true)
+            if fish.boatUI.slot ~= active then
+                fish.boatUI.window:RemoveAllAnchors()
+                fish.boatUI.window:AddAnchor("TOP", "UIParent", "CENTER", active * 50 - 125, 200)
+                fish.boatUI.slot = active
+            end
+            fishText(fish.boatUI.time, string.format("%.0fs", remaining / 1000))
+            fishShow(fish.boatUI.window, true)
         else
             fish.boatData = nil
-            fish.boatUI.window:Show(false)
+            fishShow(fish.boatUI.window, false)
         end
     end
 
@@ -695,7 +730,7 @@ local function updateFishTracker()
         local screenW = tonumber(api.Interface:GetScreenWidth()) or 1920
         updateFishOverlay(fish.watch, token, math.floor(screenW / 2) + 100, 150)
     else
-        fish.watch.win:Show(false)
+        fishShow(fish.watch.win, false)
     end
 
     if not main then return end
@@ -866,7 +901,13 @@ local function createFloatingButton()
     floatingBtn:Show(true)
 end
 
+local lastFishUpdateMs = -100000
+
 local function OnUpdate()
+    -- 10 times a second is enough for timers shown to 0.1 s.
+    local nowMs = tonumber(api.Time:GetUiMsec()) or 0
+    if nowMs - lastFishUpdateMs < 100 then return end
+    lastFishUpdateMs = nowMs
     local ok, err = pcall(updateFishTracker)
     if not ok then log("Fish Tracker error: " .. tostring(err)) end
     -- The probe (fishProbeOthers) answered everything it could, so it no

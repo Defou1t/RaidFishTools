@@ -1,5 +1,10 @@
-Raid & Fish Tools 1.3.0 - Ako/Defou1t (from Norrina-Hub by Norrina;
+Raid & Fish Tools 1.3.1 - Ako/Defou1t (from Norrina-Hub by Norrina;
 Fish Tracker based on Fish Track Reborn v2.2 by Wagasez, inspired by Usb)
+
+ОБНОВЛЕНИЕ - дважды кликните update-addons.cmd в этой папке: скачает последние
+версии Raid & Fish Tools и Auction Income (только установленные), сначала
+сохранив копию в Addon\_backups\<дата>. whitelist.txt, настройки и записи
+не затираются.
 
 КНОПКА "Raid Tool" - окно рекрутинга (Shift + перетаскивание двигает кнопку).
 
