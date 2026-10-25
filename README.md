@@ -12,6 +12,8 @@ Raid Tool and Fish Tracker are taken from [Norrina-Hub](https://github.com/r3d3r
 
 **Обновление** — дважды кликните `update-addons.cmd` в папке аддона: он скачает последние версии Raid & Fish Tools и Auction Income (только те, что у вас уже стоят), сначала сохранив копию в `Addon\_backups\<дата>`. Ваш `whitelist.txt`, настройки (`Addon\raidfish_data.lua`) и записи Auction Income не затираются. Можно и вручную: распакуйте новую версию поверх — результат тот же.
 
+**1.3.2:** иконки под рыбой снова двигаются за ней каждый кадр (в 1.3.1 позиция обновлялась 10 раз в секунду и иконки отставали при повороте камеры); баффы и таймеры по-прежнему 10 раз в секунду.
+
 **1.3.1:** Fish Tracker больше не перерисовывает иконки, тексты и позицию каждый кадр (только когда они изменились, 10 раз в секунду). С 22.10 игра часто падала в рендере (`CryRenderD3D10.dll`); старая версия за 30 кадров с одной рыбой 60 раз заново ставила текстуру иконки.
 
 ## Raid Tool
@@ -57,4 +59,4 @@ Raid Tool and Fish Tracker are taken from [Norrina-Hub](https://github.com/r3d3r
 
 Raid auto-invite by chat phrases, whitelist (window + `whitelist.txt` with `lead` / `invite` lists), blacklist, raid roles, raid lead handoff by the code word `gmlr` (default for everyone, changeable), and a fish buff tracker (always on, for the targeted fish). Unzip into `Documents\AAClassic\Addon\` so that you get `Addon\RaidFishTools\main.lua`, enable it in the in-game Addons window. Fill `RaidFishTools\whitelist.txt` like `whitelist.example.txt`, then press **Reload file**.
 
-**Update:** double-click `update-addons.cmd` in the addon folder — it backs up to `Addon\_backups\<date>` and installs the latest releases of the addons you have; `whitelist.txt`, settings and Auction Income records are kept. **1.3.1** stops the Fish Tracker from resetting icon textures, texts and anchors on every frame (the game crashed in its renderer several times a day since 2026-10-22).
+**Update:** double-click `update-addons.cmd` in the addon folder — it backs up to `Addon\_backups\<date>` and installs the latest releases of the addons you have; `whitelist.txt`, settings and Auction Income records are kept. **1.3.1** stops the Fish Tracker from resetting icon textures, texts and anchors on every frame (the game crashed in its renderer several times a day since 2026-10-22). **1.3.2** moves the icons with the fish every frame again (1.3.1 lagged behind when the camera turned); buffs and timers still refresh 10 times a second.

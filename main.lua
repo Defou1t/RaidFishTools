@@ -10,7 +10,7 @@ local addon = {
     name = "Raid & Fish Tools",
     author = "Ako/Defou1t (from Norrina-Hub by Norrina)",
     desc = "Raid auto-invite, roles, give lead; fish buff tracker.",
-    version = "1.3.1"
+    version = "1.3.2"
 }
 
 -- Kept at the Addon root, so replacing this folder never loses settings.
@@ -617,26 +617,32 @@ local function watchToken()
     return nil
 end
 
+-- Keeps overlay o under its fish. Runs every frame so the icons follow the
+-- camera smoothly; re-anchored only when the pixel position changed.
+local function placeFishOverlay(o)
+    local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(o.token) end)
+    if not (okPos and x and y) and o.fallbackX then
+        -- No screen position for this token: a fixed spot instead.
+        x, y = o.fallbackX, o.fallbackY
+    end
+    x, y = tonumber(x), tonumber(y)
+    if not (x and y) then return end
+    x, y = math.floor(x - 42), math.floor(y + 5)
+    if x ~= o.lastX or y ~= o.lastY then
+        o.win:RemoveAllAnchors()
+        o.win:AddAnchor("TOP", "UIParent", "TOPLEFT", x, y)
+        o.lastX, o.lastY = x, y
+    end
+end
+
 -- Fills overlay o for the unit behind token. Returns what the caller needs
 -- (unit id, info, dead, Owner's Mark buff) or nil when it is not a fish.
 local function updateFishOverlay(o, token, fallbackX, fallbackY)
     local unitId = token and api.Unit:GetUnitId(token)
     local info = unitId and api.Unit:GetUnitInfoById(unitId) or nil
     if not info or not fishNames[info.name] then fishShow(o.win, false); return nil end
-    local okPos, x, y = pcall(function() return api.Unit:GetUnitScreenPosition(token) end)
-    if not (okPos and x and y) and fallbackX then
-        -- No screen position for this token: a fixed spot instead.
-        x, y = fallbackX, fallbackY
-    end
-    x, y = tonumber(x), tonumber(y)
-    if x and y then
-        -- Re-anchored only when it moved by 2 pixels or more.
-        if not o.lastX or math.abs(x - o.lastX) >= 2 or math.abs(y - o.lastY) >= 2 then
-            o.win:RemoveAllAnchors()
-            o.win:AddAnchor("TOP", "UIParent", "TOPLEFT", math.floor(x - 42), math.floor(y + 5))
-            o.lastX, o.lastY = x, y
-        end
-    end
+    o.token, o.fallbackX, o.fallbackY = token, fallbackX, fallbackY
+    placeFishOverlay(o)
     local health = api.Unit:UnitHealth(token)
     if health and health <= 0 then
         fishShow(o.strengthIcon, false); fishText(o.strengthTime, "")
@@ -904,9 +910,14 @@ end
 local lastFishUpdateMs = -100000
 
 local function OnUpdate()
-    -- 10 times a second is enough for timers shown to 0.1 s.
+    -- 10 times a second is enough for buffs and timers shown to 0.1 s; the
+    -- position of a shown overlay follows the fish every frame.
     local nowMs = tonumber(api.Time:GetUiMsec()) or 0
-    if nowMs - lastFishUpdateMs < 100 then return end
+    if nowMs - lastFishUpdateMs < 100 then
+        if fish.main and shown[fish.main.win] then pcall(placeFishOverlay, fish.main) end
+        if fish.watch and shown[fish.watch.win] then pcall(placeFishOverlay, fish.watch) end
+        return
+    end
     lastFishUpdateMs = nowMs
     local ok, err = pcall(updateFishTracker)
     if not ok then log("Fish Tracker error: " .. tostring(err)) end
